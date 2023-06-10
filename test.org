@@ -1,0 +1,20 @@
+* Simple heading
+:PROPERTIES:
+:ID:       7A6FE0D8-03CE-4F08-95C8-B0A05725595A
+:END:
+
+Lorem ipsum, dolor sit amet.
+
+
+* Items with ID
+(setq openai-key (op-get-password ))
+
+#+attr_embeddings: :id c6dba9ff-0093-4f6b-8911-74508f2638ff
+Some random paragraph.
+
+* Element two
+:PROPERTIES:
+:ID:       EE12CA80-254B-495F-8779-F408B18EB387
+:END:
+
+ Note that, even though structures obtained with local parsers are mutable, it is good practice to consider them immutable. In particular, destructively changing properties relative to buffer positions is likely to break the caching mechanism running in the background. If, for example, you need to slightly alter an element obtained using these functions, first copy it, using org-element-copy, before modifying it by side effect. There is no such restriction for elements grabbed from a complete AST.

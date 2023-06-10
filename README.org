@@ -1,0 +1,43 @@
+* Contribution
+
+I need help=)
+
+* Logic
+
+The library can receive embeddings from various AI engines, with
+OpenAI being one of the options.
+
+It takes an org-element as input and performs the necessary operations
+within the library.
+
+The output vector can be saved in a vector database (specifically,
+sqlite-vss is the built-in option) or utilized in any other preferred
+manner.
+
+** Namespaces
+
+- =org-embeddings-store-*= - Used to save embeddings received from AI
+  services.
+
+- =org-embeddings-create-*= - Create an embedding for a given text.
+- =org-embeddings-element-*= - Works with org file structure
+- =org-embeddings-json-*= - Store embeddings in JSON - suitable for
+  development;
+- =org-embeddings-openai-*= - Create embeddings with OpenAI.
+- =org-embeddings-pipe-*= - Pre-process the data before sending it to an
+  API.
+
+* Diagrams
+:PROPERTIES:
+:ID:       B7458519-2C16-474B-ACD6-6352F4A80E70
+:END:
+
+#+begin_src plantuml
+(*) --> "org-element"
+"org-element" --> Expand if needed
+Expand if needed --> Filter if needed
+Filter if needed --> Feed to ai engine
+Feed to ai engine --> "vector"
+"vector" --> "vector database"
+"vector database" --> (*)
+#+end_src
