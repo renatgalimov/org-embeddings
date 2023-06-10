@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org))
-;; Last-Updated: Fri Jun  9 20:32:11 2023 (+0300)
+;; Last-Updated: Sat Jun 10 07:35:44 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 547
+;;     Update #: 609
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -64,8 +64,17 @@
 
 (defun org-embeddings-embeddable-p (element)
   "Check if an ELEMENT is embeddable."
-  (or (org-element-property :ID element)
+  (or (and (eq (org-element-type element) 'headline)
+           (org-element-property :ID element))
       (org-element-property :attr_embeddings element)))
+
+(defun org-embeddings-element-title (element)
+  "Get title of an ELEMENT."
+  (unless element
+    (error "No element given"))
+  (cond ((eq (org-element-type element) 'headline)
+         (org-element-property :raw-value element))))
+
 
 (defun org-embeddings-element-at-point ()
   "Get an element we can calculate embeddings for.
@@ -80,12 +89,22 @@ Search for an embeddable element going up the file."
     (save-excursion
       (cl-loop with element = (org-element-at-point)
                while element
-               until (and (org-embeddings-embeddable-p element) (not (eq (org-element-type element) 'headline)))
-               do (setq element (org-embeddings-element-previous element))
-               finally return (make-org-embeddings-source
-                               :id (org-element-property :ID element)
-                               :text (org-embeddings-element-text element)
-                               :metadata `(:file ,(buffer-file-name)))))))
+               until (org-embeddings-embeddable-p element)
+               do (setq element
+                        ;; Don't go up if the current element is a headline
+                        (if (eq (org-element-type element) 'headline)
+                            nil
+                          (org-embeddings-element-previous element)))
+               finally return element))))
+
+(defun org-embeddings-source-from-element (element)
+    "Create a source from an ELEMENT."
+    (unless element
+        (error "No element given"))
+    (let ((id (org-element-property :ID element))
+          (text (org-embeddings-element-text element))
+          (metadata `(:file ,(buffer-file-name) :title ,(org-embeddings-element-title element))))
+      (make-org-embeddings-source :id id :text text :metadata metadata)))
 
 (defun org-embeddings-element-text (element)
   "Get text of an ELEMENT for API."
@@ -110,10 +129,10 @@ Search for an embeddable element going up the file."
 ;; ===== STORE =====
 
 (cl-defstruct org-embeddings-source
-    "Request to store an embedding."
-    id
-    text
-    metadata)
+  "Request to store an embedding."
+  (id nil :type string :documentation "ID of the object to store")
+  (text nil :type string :documentation "Text to get embeddings for")
+  (metadata nil :type plist :documentation "Metadata to store with the resulting embedding"))
 
 (defun org-embeddings-store-get (model id)
   "Get an embedding for MODEL and ID from the store."
@@ -218,18 +237,19 @@ This is set as a safe default, as the limit for the smallest model.")
                      (alist-get model org-embeddings-openai-model-tokens)
                      org-embeddings-openai-default-token-limit)))
 
-(defun org-embeddings-openai-create (id text &optional metadata)
-  "Get an embedding for TEXT. Embedding saved into the default storage by its ID."
-  (unless id
-    (error "Element has no ID"))
+(defun org-embeddings-openai-create (source)
+  "Create an embedding for SOURCE."
+  (unless source
+    (error "No source given"))
 
-  (openai-embedding-create
-   (org-embeddings-openai-trim org-embeddings-openai-default-model text)
-   (lambda (data)
-     (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
-           (model (alist-get 'model data)))
-       (org-embeddings-json-store model id vector metadata)))
-   :model (or org-embeddings-openai-default-model (error "No default OpenAI model set"))))
+  (let ((text (org-embeddings-source-text source)))
+    (openai-embedding-create
+     (org-embeddings-openai-trim org-embeddings-openai-default-model text)
+     (lambda (data)
+       (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
+             (model (alist-get 'model data)))
+         (org-embeddings-json-store model id vector metadata)))
+     :model (or org-embeddings-openai-default-model (error "No default OpenAI model set")))))
 
 ;; ===== CREATE =====
 
@@ -240,10 +260,10 @@ This is set as a safe default, as the limit for the smallest model.")
    #'org-embeddings-openai-create
    (if current-prefix-arg (org-embeddings-file-get)
      (let ((element (or element (org-embeddings-element-at-point))))
-       (list (org-element-property :ID element)
-             (buffer-substring-no-properties
-              (org-element-property :begin element)
-              (org-element-property :end element)))))))
+       (unless element
+         (error "No element at point that we can get an embedding of"))
+
+       (org-embeddings-source-from-element element)))))
 
 
 ;; ===== LOG =====
