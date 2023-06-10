@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org))
-;; Last-Updated: Sat Jun 10 07:35:44 2023 (+0300)
+;; Last-Updated: Sat Jun 10 07:45:53 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 609
+;;     Update #: 624
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -173,14 +173,16 @@ Search for an embeddable element going up the file."
 Use it for testing, primarily, as it doesn't work well with
 larger databases."
   (let ((current-embeddings (org-embeddings-json-load model))
-        (file (org-embeddings-json-file-name model)))
-    (puthash id vector current-embeddings)
+        (file (org-embeddings-json-file-name model))
+        (new-object (make-hash-table :test 'equal)))
+    (puthash "vector" vector new-object)
     (cond ((hash-table-p metadata)
-           (puthash "metadata" metadata current-embeddings))
+           (puthash "metadata" metadata new-object))
           ((plistp metadata)
-           (puthash "metadata" (org-embeddings-plist-to-hash-table metadata) current-embeddings))
+           (puthash "metadata" (org-embeddings-plist-to-hash-table metadata) new-object))
           ((listp metadata)
-           (puthash "metadata" (org-embeddings-alist-to-hash-table metadata) current-embeddings)))
+           (puthash "metadata" (org-embeddings-alist-to-hash-table metadata) new-object)))
+    (puthash id new-object current-embeddings)
 
     (with-temp-file file
       (insert (json-serialize current-embeddings :null-object nil)))
@@ -233,16 +235,20 @@ This is set as a safe default, as the limit for the smallest model.")
     (error "No model given"))
   (unless text
     (error "No text given"))
-  (substring text 0 (or
-                     (alist-get model org-embeddings-openai-model-tokens)
-                     org-embeddings-openai-default-token-limit)))
+  (if (<= (length text) org-embeddings-openai-default-token-limit)
+      text
+    (substring text 0 (or
+                       (alist-get model org-embeddings-openai-model-tokens)
+                       org-embeddings-openai-default-token-limit))))
 
 (defun org-embeddings-openai-create (source)
   "Create an embedding for SOURCE."
   (unless source
     (error "No source given"))
 
-  (let ((text (org-embeddings-source-text source)))
+  (let ((text (org-embeddings-source-text source))
+        (id (org-embeddings-source-id source))
+        (metadata (org-embeddings-source-metadata source)))
     (openai-embedding-create
      (org-embeddings-openai-trim org-embeddings-openai-default-model text)
      (lambda (data)
@@ -256,13 +262,12 @@ This is set as a safe default, as the limit for the smallest model.")
 (defun org-embeddings-create (&optional element)
   "Get an embedding of an ELEMENT or a current org subtree."
   (interactive)
-  (apply
-   #'org-embeddings-openai-create
-   (if current-prefix-arg (org-embeddings-file-get)
+  (org-embeddings-openai-create
+   (if current-prefix-arg
+       (org-embeddings-file-get)
      (let ((element (or element (org-embeddings-element-at-point))))
        (unless element
          (error "No element at point that we can get an embedding of"))
-
        (org-embeddings-source-from-element element)))))
 
 
