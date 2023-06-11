@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org))
-;; Last-Updated: Sun Jun 11 07:13:39 2023 (+0300)
+;; Last-Updated: Sun Jun 11 15:34:51 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 809
+;;     Update #: 913
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -155,6 +155,10 @@ Search for an embeddable element going up the file."
   :type 'string
   :group 'org-embeddings)
 
+(defconst org-embeddings-json-cache '()
+  "Cache of JSON files.")
+
+
 (defun org-embeddings-plist-to-hash-table (input)
     "Convert INPUT plist to a hash table."
     (cl-loop for (key value) on input by #'cddr
@@ -170,10 +174,11 @@ Search for an embeddable element going up the file."
              do (puthash (symbol-name key) value result)
              finally return result)))
 
-;; TODO: Make JSON store keep everything cached in memory.
 ;; So you just update the global JSON file and then flush it into a file.
-(cl-defun org-embeddings-json-store (model id hash vector &optional metadata)
+(cl-defun org-embeddings-json-store (model id hash vector &optional metadata flush)
   "Add VECTOR with ID to a JSON file for MODEL.
+
+If FLUSH is given, automatically save the cache to a file.
 
 Use it for testing, primarily, as it doesn't work well with
 larger databases."
@@ -184,34 +189,58 @@ larger databases."
   (unless (vectorp vector)
     (error "Vector should be a vector"))
 
-  (let ((current-embeddings (org-embeddings-json-load model))
+  (unless (plist-member org-embeddings-json-cache model)
+    (org-embeddings-json-load model))
+
+  (let ((current-embeddings (plist-get org-embeddings-json-cache model))
         (file (org-embeddings-json-file-name model))
         (new-object (make-hash-table :test 'equal)))
     (puthash "vector" vector new-object)
     (puthash "hash" hash new-object)
-    (cond ((hash-table-p metadata)
+    (cond ((and metadata (hash-table-p metadata))
            (puthash "metadata" metadata new-object))
           ((plistp metadata)
            (puthash "metadata" (org-embeddings-plist-to-hash-table metadata) new-object))
           ((listp metadata)
            (puthash "metadata" (org-embeddings-alist-to-hash-table metadata) new-object)))
-    (puthash id new-object current-embeddings)
-
-    (with-temp-file file
-      (insert (json-serialize current-embeddings :null-object nil)))
+    (puthash id current-embeddings new-object)
     (org-embeddings-log "info" "Embedding `%s' JSON saved to `%s'" id file)))
 
 (defun org-embeddings-json-load (model)
-  "Load embeddings for MODEL from JSON file.
+  "Load embeddings for MODEL from JSON file to a cache.
 
+If value for a key is already in the cache, it won't be updated.
 Returns an empty hash table if the file doesn't exist."
-  (let ((file (org-embeddings-json-file-name model)))
-    (if (file-exists-p file)
-        (with-temp-buffer
-          (insert-file-contents file)
-          (goto-char (point-min))
-          (json-parse-buffer :null-object nil :object-type 'hash-table))
-      (make-hash-table))))
+  (unless model
+    (error "No model given"))
+
+  (let ((file (org-embeddings-json-file-name model))
+        (cache (plist-get org-embeddings-json-cache model))
+        (loaded-cache))
+
+    (unless cache
+      (setq cache (make-hash-table :test 'equal))
+      (plist-put org-embeddings-json-cache model cache))
+
+    (when (file-exists-p file)
+      (setq loaded-cache (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (json-parse-buffer :null-object nil :object-type 'hash-table)))
+
+      (maphash (lambda (key value)
+                 (when (not (gethash key cache))
+                   (puthash key value cache)))
+               loaded-cache))))
+
+(defun org-embeddings-json-flush (&optional model)
+  "Flush the cache to JSON files.
+
+If MODEL is given - save only for that model."
+  (cl-loop for (model current-embeddings) on org-embeddings-json-cache by #'cddr
+           if (or (not model) (equal model model))
+           do (with-temp-file (org-embeddings-json-file-name model)
+                (insert (json-serialize current-embeddings :null-object nil)))))
 
 (defun org-embeddings-json-get (model id)
     "Get an embedding for MODEL and ID from a JSON file."
@@ -219,10 +248,12 @@ Returns an empty hash table if the file doesn't exist."
 
 (defun org-embeddings-json-file-name (model)
   "Get a file name for storing embeddings for PATH and MODEL."
+  (unless (symbolp model)
+    (error "Model should be a symbol"))
   (unless (file-exists-p org-embeddings-json-directory)
     (make-directory org-embeddings-json-directory t))
   (expand-file-name
-   (concat org-embeddings-json-file-prefix model ".json")
+   (concat org-embeddings-json-file-prefix (symbol-name model) ".json")
    org-embeddings-json-directory))
 
 ;; ===== OPENAI =====
@@ -267,7 +298,7 @@ This is set as a safe default, as the limit for the smallest model.")
      (org-embeddings-openai-trim org-embeddings-openai-default-model text)
      (lambda (data)
        (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
-             (model (alist-get 'model data)))
+             (model (intern (alist-get 'model data))))
          (org-embeddings-log "debug" "Saving emedding `%s'" id)
          (org-embeddings-log "debug" "%s" text)
          (org-embeddings-json-store model id (secure-hash 'sha1 text) vector metadata)))
@@ -405,11 +436,14 @@ Returns `org-embeddings-source' object."
     (/ dot-product (* left-length right-length))))
 
 (defun org-embeddings-index-daily-files ()
+  "Index all daily files."
+  (org-embeddings-json-load org-embeddings-openai-default-model)
   (cl-loop for file in (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
            do (progn
                 (org-embeddings-create (find-file-noselect file))
-                (org-embeddings-log "DEBUG" "Indexing %s" file)
-                (sleep-for 5))))
+                (org-embeddings-log "DEBUG" "Indexing %s" file)))
+  (org-embeddings-json-flush org-embeddings-openai-default-model))
+
 
 
 

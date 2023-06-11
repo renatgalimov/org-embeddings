@@ -1,3 +1,20 @@
+
+* Tasks
+
+** TODO Search should display in an xref or xref-like buffer
+
+Current "I'm feeling lucky" approach is't very helpful.
+
+** DONE [#A] JSON storage have model data cached
+:LOGBOOK:
+- State "DONE"       from "CANCELED"   [2023-06-11 Sun 15:35]
+- State "DONE"       from "TODO"       [2023-06-11 Sun 15:35]
+:END:
+
+This way we will be able to patch the model data at any time wihout
+being afraid of race conditions.
+
+
 * Logic
 
 The library can receive embeddings from various AI engines, with
