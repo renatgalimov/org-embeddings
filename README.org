@@ -1,7 +1,3 @@
-* Contribution
-
-I need help=)
-
 * Logic
 
 The library can receive embeddings from various AI engines, with
