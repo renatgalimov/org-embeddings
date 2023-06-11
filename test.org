@@ -17,4 +17,21 @@ Some random paragraph.
 :ID:       EE12CA80-254B-495F-8779-F408B18EB387
 :END:
 
- Note that, even though structures obtained with local parsers are mutable, it is good practice to consider them immutable. In particular, destructively changing properties relative to buffer positions is likely to break the caching mechanism running in the background. If, for example, you need to slightly alter an element obtained using these functions, first copy it, using org-element-copy, before modifying it by side effect. There is no such restriction for elements grabbed from a complete AST.
+ Note that, even though structures obtained with local parsers are
+ mutable, it is good practice to consider them immutable. In
+ particular, destructively changing properties relative to buffer
+ positions is likely to break the caching mechanism running in the
+ background. If, for example, you need to slightly alter an element
+ obtained using these functions, first copy it, using
+ org-element-copy, before modifying it by side effect. There is no
+ such restriction for elements grabbed from a complete AST.
+
+#+begin_src bash :export both :eval always :exports both
+  ls
+#+end_src
+
+#+RESULTS:
+| LICENSE           |
+| README.org        |
+| org-embeddings.el |
+| test.org          |

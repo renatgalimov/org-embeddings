@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org))
-;; Last-Updated: Sat Jun 10 07:45:53 2023 (+0300)
+;; Last-Updated: Sun Jun 11 07:13:39 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 624
+;;     Update #: 809
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -98,13 +98,17 @@ Search for an embeddable element going up the file."
                finally return element))))
 
 (defun org-embeddings-source-from-element (element)
+  ;; TODO: This function is useless. You need a way to export the element.
+  ;; Instead of this make a function that makes the source from a region.
+
     "Create a source from an ELEMENT."
     (unless element
-        (error "No element given"))
-    (let ((id (org-element-property :ID element))
-          (text (org-embeddings-element-text element))
-          (metadata `(:file ,(buffer-file-name) :title ,(org-embeddings-element-title element))))
-      (make-org-embeddings-source :id id :text text :metadata metadata)))
+      (error "No element given"))
+    (cl-letf ((org-export-use-babel nil))
+      (let ((id (org-element-property :ID element))
+            (text (org-export-as 'ascii nil nil t org-embeddings-export-plist))
+            (metadata `(:file ,(buffer-file-name) :title ,(org-embeddings-element-title element))))
+        (make-org-embeddings-source :id id :text text :metadata metadata))))
 
 (defun org-embeddings-element-text (element)
   "Get text of an ELEMENT for API."
@@ -166,16 +170,25 @@ Search for an embeddable element going up the file."
              do (puthash (symbol-name key) value result)
              finally return result)))
 
-
-(cl-defun org-embeddings-json-store (model id vector &optional metadata)
+;; TODO: Make JSON store keep everything cached in memory.
+;; So you just update the global JSON file and then flush it into a file.
+(cl-defun org-embeddings-json-store (model id hash vector &optional metadata)
   "Add VECTOR with ID to a JSON file for MODEL.
 
 Use it for testing, primarily, as it doesn't work well with
 larger databases."
+  (unless (stringp id)
+    (error "ID should be a string"))
+  (unless (stringp hash)
+    (error "Hash should be a string"))
+  (unless (vectorp vector)
+    (error "Vector should be a vector"))
+
   (let ((current-embeddings (org-embeddings-json-load model))
         (file (org-embeddings-json-file-name model))
         (new-object (make-hash-table :test 'equal)))
     (puthash "vector" vector new-object)
+    (puthash "hash" hash new-object)
     (cond ((hash-table-p metadata)
            (puthash "metadata" metadata new-object))
           ((plistp metadata)
@@ -237,7 +250,7 @@ This is set as a safe default, as the limit for the smallest model.")
     (error "No text given"))
   (if (<= (length text) org-embeddings-openai-default-token-limit)
       text
-    (substring text 0 (or
+    (string-limit text (or
                        (alist-get model org-embeddings-openai-model-tokens)
                        org-embeddings-openai-default-token-limit))))
 
@@ -249,13 +262,17 @@ This is set as a safe default, as the limit for the smallest model.")
   (let ((text (org-embeddings-source-text source))
         (id (org-embeddings-source-id source))
         (metadata (org-embeddings-source-metadata source)))
+    (org-embeddings-log "debug" "Creating OpenAI embedding for `%s'" text)
     (openai-embedding-create
      (org-embeddings-openai-trim org-embeddings-openai-default-model text)
      (lambda (data)
        (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
              (model (alist-get 'model data)))
-         (org-embeddings-json-store model id vector metadata)))
+         (org-embeddings-log "debug" "Saving emedding `%s'" id)
+         (org-embeddings-log "debug" "%s" text)
+         (org-embeddings-json-store model id (secure-hash 'sha1 text) vector metadata)))
      :model (or org-embeddings-openai-default-model (error "No default OpenAI model set")))))
+
 
 ;; ===== CREATE =====
 
@@ -268,7 +285,42 @@ This is set as a safe default, as the limit for the smallest model.")
      (let ((element (or element (org-embeddings-element-at-point))))
        (unless element
          (error "No element at point that we can get an embedding of"))
-       (org-embeddings-source-from-element element)))))
+       (if (bufferp element)
+           (with-current-buffer element
+             (org-embeddings-file-get))
+         (org-embeddings-source-from-element element))))))
+
+
+;; TODO:: This is a demo-only function. Perhaps, when I have time - I need to write a helm source.
+(defun org-embeddings-search (&optional query)
+    "Search for an embedding similar to QUERY."
+  (interactive "sSearch: ")
+  (message "Searching for `%s'" query)
+  (openai-embedding-create
+   query
+   (lambda (data)
+     (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
+           (model (alist-get 'model data)))
+       (let ((vectors-by-id (org-embeddings-json-load model))
+             (current-similarity 0)
+             (current-value))
+         (maphash (lambda (_ object)
+                    (let ((similarity (org-embeddings-vector-cosine-similarity vector (gethash "vector" object))))
+                      (when (> similarity current-similarity)
+                        (setq current-similarity similarity)
+                        (setq current-value object))))
+                  vectors-by-id)
+         (unless current-value
+           (error "No similar embedding found"))
+
+         (let* ((metadata (gethash "metadata" current-value))
+                (file (gethash "file" metadata)))
+           ;; Open file
+           (find-file file)
+           (goto-char (point-min))
+           (org-embeddings-log "INFO" "Found `%s' in `%s' with cosine similarify %f" query file current-similarity)))))
+   :model (or org-embeddings-openai-default-model (error "No default OpenAI model set"))))
+
 
 
 ;; ===== LOG =====
@@ -283,26 +335,86 @@ This is set as a safe default, as the limit for the smallest model.")
         (goto-char (point-max))
         (insert (format-time-string "%Y-%m-%d %H:%M:%S"))
         (insert " ")
-        (insert (format "%s " level))
+        (insert (format "%s " (upcase level)))
         (insert (apply 'format message args))
         (insert "\n")))
 
 
 ;; ===== FILE =====
 
+(defconst org-embeddings-export-plist
+  '(:with-author nil :with-email nil :with-stat nil :with-priority nil :with-toc nil :with-properties nil :with-planning nil)
+  "Plist of options for `org-export-as'.")
+
 (defun org-embeddings-file-get ()
   "Get a text and ID of current file to process.
 
 Returns `org-embeddings-source' object."
   (save-window-excursion
-    (save-excursion
+    (save-mark-and-excursion
       (goto-char (point-min))
       (let ((id (org-id-get)))
         (unless id
           (error "No ID found"))
-        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-          (make-org-embeddings-source :id id :text text :metadata `(:file ,(buffer-file-name))))))))
+        (cl-letf ((org-export-use-babel nil))
+          (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
+            (make-org-embeddings-source :id id :text text :metadata `(:file ,(buffer-file-name)))))))))
 
+;; ===== VECTOR ====
+
+(defun org-embeddings-vector-distance (left right)
+  "Calculate a distance between LEFT and RIGHT vectors."
+    (unless (and (vectorp left) (vectorp right))
+      (error "Both LEFT and RIGHT must be vectors"))
+
+    (unless (= (length left) (length right))
+      (error "Both LEFT and RIGHT must be of the same length"))
+
+    (cl-loop
+     with sum = 0
+     for element-left across left
+     for element-right across right
+     do (setq sum (+ sum (expt (- element-left element-right) 2)))
+     finally return (sqrt sum)))
+
+
+(defun org-embeddings-vector-cosine-similarity (left right)
+  "Calculate a cosine similarity between LEFT and RIGHT vectors."
+  (unless (and (vectorp left) (vectorp right))
+    (error "Both LEFT and RIGHT must be vectors"))
+
+  (unless (= (length left) (length right))
+    (error "Both LEFT and RIGHT must be of the same length"))
+
+  (let ((dot-product (cl-loop
+                      with sum = 0
+                      for element-left across left
+                      for element-right across right
+                      do (setq sum (+ sum (* element-left element-right)))
+                      finally return sum))
+        (left-length (sqrt (cl-loop
+                            with sum = 0
+                            for element-left across left
+                            do (setq sum (+ sum (expt element-left 2)))
+                            finally return sum)))
+        (right-length (sqrt (cl-loop
+                             with sum = 0
+                             for element-right across right
+                             do (setq sum (+ sum (expt element-right 2)))
+                             finally return sum))))
+    (/ dot-product (* left-length right-length))))
+
+(defun org-embeddings-index-daily-files ()
+  (cl-loop for file in (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
+           do (progn
+                (org-embeddings-create (find-file-noselect file))
+                (org-embeddings-log "DEBUG" "Indexing %s" file)
+                (sleep-for 5))))
+
+
+
+
+(provide 'org-embeddings)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; org-embeddings.el ends here
