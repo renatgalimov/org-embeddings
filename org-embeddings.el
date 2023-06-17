@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org))
-;; Last-Updated: Sat Jun 17 06:39:04 2023 (+0300)
+;; Last-Updated: Sat Jun 17 07:24:58 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 1064
+;;     Update #: 1112
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -160,14 +160,18 @@ Search for an embeddable element going up the file."
   "Cache of JSON files.")
 
 
+(defun -dbg (v)
+  (message "dbg - %s" v)
+  v)
 (defun org-embeddings-plist-to-hash-table (input)
   "Convert INPUT plist to a hash table."
+  (org-embeddings-log "debug" "Converting plist to hash table")
   (cl-loop for (key value) on input by #'cddr
            with result = (make-hash-table :test 'equal)
            do (puthash (substring (symbol-name key) 1) value result)
            finally return result))
 
-
+;;(gethash "metadata" (gethash "45970681-A829-4DB4-A304-81A0C409707A" (plist-get org-embeddings-json-cache 'text-embedding-ada-002-v2)))
 (defun org-embeddings-alist-to-hash-table (input)
   "Convert INPUT alist to a hash table."
   (let ((result (make-hash-table :test 'equal)))
@@ -176,7 +180,7 @@ Search for an embeddable element going up the file."
              finally return result)))
 
 ;; So you just update the global JSON file and then flush it into a file.
-(cl-defun org-embeddings-json-store (model id hash vector &optional metadata flush)
+(cl-defun org-embeddings-json-store (model id hash vector &optional metadata)
   "Add VECTOR with ID to a JSON file for MODEL.
 
 If FLUSH is given, automatically save the cache to a file.
@@ -194,8 +198,8 @@ larger databases."
     (org-embeddings-json-load model))
 
   (let ((current-embeddings (plist-get org-embeddings-json-cache model))
-        (file (org-embeddings-json-file-name model))
         (new-object (make-hash-table :test 'equal)))
+    (org-embeddings-log "debug" "Current embeddings: %s" current-embeddings)
     (puthash "vector" vector new-object)
     (puthash "hash" hash new-object)
     (cond ((and metadata (hash-table-p metadata))
@@ -203,9 +207,10 @@ larger databases."
           ((plistp metadata)
            (puthash "metadata" (org-embeddings-plist-to-hash-table metadata) new-object))
           ((listp metadata)
-           (puthash "metadata" (org-embeddings-alist-to-hash-table metadata) new-object)))
-    (puthash id current-embeddings new-object)
-    (org-embeddings-log "info" "Embedding `%s' JSON saved to `%s'" id file)))
+           (puthash "metadata" (org-embeddings-alist-to-hash-table metadata) new-object))
+          (metadata (error "Metadata should be a plist, alist or a hash table. Got `%s' of type `%s'" metadata (type-of metadata))))
+    (puthash id new-object current-embeddings)
+    (org-embeddings-log "info" "Embedding `%s' JSON saved" id)))
 
 (defun org-embeddings-json-load (model)
   "Load embeddings for MODEL from JSON file to a cache.
@@ -221,7 +226,8 @@ Returns an empty hash table if the file doesn't exist."
 
     (unless cache
       (setq cache (make-hash-table :test 'equal))
-      (plist-put org-embeddings-json-cache model cache))
+      (org-embeddings-log "debug" "Fresh cache for model `%s' created" model)
+      (setq org-embeddings-json-cache (plist-put org-embeddings-json-cache model cache)))
 
     (if (not (file-exists-p file))
         (org-embeddings-log "info" "JSON file for model `%s' doesn't exist" model)
@@ -234,9 +240,8 @@ Returns an empty hash table if the file doesn't exist."
                  (when (not (gethash key cache))
                    (puthash key value cache)))
                loaded-cache)
-      (org-embeddings-log "info" "JSON file for model `%s' loaded" model)
-      )
-    loaded-cache))
+      (org-embeddings-log "info" "JSON file for model `%s' loaded" model))
+    cache))
 
 (defun org-embeddings-json-flush (&optional model)
   "Flush the cache to JSON files.
@@ -245,6 +250,7 @@ If MODEL is given - save only for that model."
   (cl-loop for (model current-embeddings) on org-embeddings-json-cache by #'cddr
            if (or (not model) (equal model model))
            do (with-temp-file (org-embeddings-json-file-name model)
+                (org-embeddings-log "info" "Flushing JSON for model `%s' to `%s'" model (org-embeddings-json-file-name model))
                 (insert (json-serialize current-embeddings :null-object nil)))))
 
 (defun org-embeddings-json-get (model id)
@@ -335,8 +341,9 @@ METADATA: plist"
   (org-embeddings-log "debug" "Creating TLDR for `%s'" text)
   (openai-completion (format "%s\nTLDR, single line, 16 words at most:" text)
                      (lambda (data)
-                       (org-embeddings-log "debug" "TLDR: %s" data)
-                       (funcall callback (alist-get 'text (seq-elt (alist-get 'choices data) 0))))
+                       (let ((choice (string-trim (alist-get 'text (seq-elt (alist-get 'choices data) 0)))))
+                         (org-embeddings-log "debug" "TLDR: %s" choice)
+                         (funcall callback choice)))
                      :max-tokens 32
                      :temperature 1.0
                      :frequency-penalty 0.0
@@ -386,6 +393,7 @@ METADATA: plist"
            (erase-buffer)
            (org-mode)
            (insert (format "* Search results for `%s'\n\n" query))
+           (insert (format " - model: %s\n" model))
            (insert (format "%s\n\n" (cl-loop for location in (seq-sort (lambda (a b) (> (car a) (car b))) locations)
                                              for similarity = (car location)
                                              for file = (gethash "file" (gethash "metadata" (cdr location)))
@@ -481,9 +489,11 @@ Returns `org-embeddings-source' object."
     "Index all daily files."
     (org-embeddings-json-load org-embeddings-openai-default-model)
     (cl-loop for file in (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
+             for content-length = (nth 7 (file-attributes file))
+             when (> content-length 168)
              do (progn
                   (org-embeddings-create (find-file-noselect file))
-                  (org-embeddings-log "DEBUG" "Indexing %s" file)
+                  (org-embeddings-log "debug" "Indexing %s" file)
                   (sleep-for 5)))
     (org-embeddings-json-flush org-embeddings-openai-default-model)))
 
