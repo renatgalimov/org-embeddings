@@ -1,6 +1,13 @@
 * Tasks
 
-** TODO Search should display in an org buffer
+* TODO [#A] Catch errors returned by OpenAI
+* TODO [#B] Skip embeddings generation if hash didn't change
+* TODO [#C] Extract title from the =#+title= field of the file
+* TODO [#B] Implement traversing over org-roam node and generating embeddings
+** DONE Search should display in an org buffer
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2023-06-17 Sat 07:38]
+:END:
 Current "I'm feeling lucky" approach is't very helpful.
 
 ** DONE [#A] JSON storage have model data cached
