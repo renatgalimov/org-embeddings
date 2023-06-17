@@ -1,8 +1,6 @@
-
 * Tasks
 
-** TODO Search should display in an xref or xref-like buffer
-
+** TODO Search should display in an org buffer
 Current "I'm feeling lucky" approach is't very helpful.
 
 ** DONE [#A] JSON storage have model data cached
