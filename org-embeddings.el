@@ -6,10 +6,10 @@
 ;; Maintainer:
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
-;; Package-Requires: ((openai) (org))
-;; Last-Updated: Sat Jun 17 07:24:58 2023 (+0300)
+;; Package-Requires: ((openai) (org) (deferred))
+;; Last-Updated: Mon Jul  3 05:40:59 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 1112
+;;     Update #: 1929
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -50,6 +50,7 @@
 (require 'openai-embedding)
 (require 'openai-completion)
 (require 'org-element)
+(require 'deferred)
 
 (defgroup org-embeddings nil
   "Get embeddings of org subtrees."
@@ -60,6 +61,45 @@
 (defvar org-embeddings-json-file
   (expand-file-name "org-embeddings.json" user-emacs-directory)
   "File to store embeddings in.")
+
+;; ===== UTILS =====
+
+(defun org-embeddings-metadata (&rest args)
+  "Create a metadata hash table from ARGS."
+  (let ((result (make-hash-table :test 'equal)))
+    (while args
+      ;; Strip leading :
+      (puthash (substring (symbol-name (pop args)) 1) (pop args) result))
+    result))
+
+
+;; ===== ERRORS =====
+
+(define-error 'org-embeddings-error "Generic org-embeddings error")
+(define-error 'org-embeddings-data-error "Cannot extract needed data from the object" 'org-embeddings-error)
+(define-error 'org-embeddings-http-error "HTTP error" 'org-embeddings-error)
+
+;; ===== FILE =====
+
+(defconst org-embeddings-export-plist
+  '(:with-author nil :with-email nil :with-stat nil :with-priority nil :with-toc nil :with-properties nil :with-planning nil)
+  "Plist of options for `org-export-as'.")
+
+(defun org-embeddings-file-get (path)
+  "Get a text and ID of current file to process.
+
+Returns `org-embeddings-source' object."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (goto-char (point-min))
+    (let ((id (org-id-get (point-min) nil)))
+      (unless id
+        (org-embeddings-log "debug" "No ID found in %s" path)
+        (error "No ID found"))
+      (cl-letf ((org-export-use-babel nil))
+        (org-embeddings-log "debug" "Exporting embeddings source with id %s" id)
+        (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
+          (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file (buffer-file-name))))))))
 
 ;; ===== ELEMENT =====
 
@@ -108,7 +148,7 @@ Search for an embeddable element going up the file."
   (cl-letf ((org-export-use-babel nil))
     (let ((id (org-element-property :ID element))
           (text (org-export-as 'ascii nil nil t org-embeddings-export-plist))
-          (metadata `(:file ,(buffer-file-name) :title ,(org-embeddings-element-title element))))
+          (metadata (org-embeddings-metadata :file (buffer-file-name) :title (org-embeddings-element-title element))))
       (make-org-embeddings-source :id id :text text :metadata metadata))))
 
 (defun org-embeddings-element-text (element)
@@ -131,16 +171,45 @@ Search for an embeddable element going up the file."
       (org-element-at-point))))
 
 
+;; ===== SOURCE =====
+(cl-defstruct
+    (org-embeddings-source
+     (:constructor make-org-embeddings-source (&key id text metadata &aux (hash (secure-hash 'sha256 text)))))
+  "We send this to the API to get embeddings."
+  (id nil :type string :documentation "ID of the object to store" :read-only t)
+  (text "" :type string :documentation "Text to get embeddings for" :read-only t)
+  (metadata nil :type hash-table :documentation "Metadata loaded from a source" :read-only t)
+  (hash nil :type string :documentation "Hash of the source text" :read-only t))
+
+
 ;; ===== STORE =====
 
-(cl-defstruct org-embeddings-source
-  "Request to store an embedding."
-  (id nil :type string :documentation "ID of the object to store")
-  (text nil :type string :documentation "Text to get embeddings for")
-  (metadata nil :type plist :documentation "Metadata to store with the resulting embedding"))
+(cl-defstruct
+    org-embeddings-record
+  "Internal representation of the embedding for usage within the library."
+  (id nil :type string :documentation "ID of the object to store" :read-only t)
+  (hash nil :type string :documentation "Hash of the source text" :read-only t)
+  (vector nil :type vector :documentation "Resulting embedding" :read-only t)
+  (model nil :type string :documentation "Model to use for embeddings" :read-only t)
+  (metadata nil :type hash-table :documentation "Metadata to store with the resulting embedding" :read-only t))
+
+
+(defun org-embeddings-store (record &optional backend-args)
+  "Store a RECORD in the store.
+
+Pass BACKEND-ARGS to the backend."
+
+  (unless (and record (org-embeddings-record-p record))
+    (signal 'wrong-type-argument (list 'org-embeddings-record-p record)))
+
+  ;; Currently - I hardcode JSON store
+  ;; Later this would be configurable
+  (apply #'org-embeddings-json-store record backend-args))
 
 (defun org-embeddings-store-get (model id)
-  "Get an embedding for MODEL and ID from the store."
+  "Get an embedding for MODEL and ID from the store.
+
+Return an `org-embeddings-record' object."
   ;; TODO: Temporarily I use hardcoded JSON
   (org-embeddings-json-get model id))
 
@@ -159,10 +228,12 @@ Search for an embeddable element going up the file."
 (defconst org-embeddings-json-cache '()
   "Cache of JSON files.")
 
+(defconst org-embeddings-json-flush-timeout 10
+  "Timeout to flush JSON cache.")
 
-(defun -dbg (v)
-  (message "dbg - %s" v)
-  v)
+(defvar org-embeddings-json-flush-timer nil
+  "Timer to flush JSON cache.")
+
 (defun org-embeddings-plist-to-hash-table (input)
   "Convert INPUT plist to a hash table."
   (org-embeddings-log "debug" "Converting plist to hash table")
@@ -180,87 +251,117 @@ Search for an embeddable element going up the file."
              finally return result)))
 
 ;; So you just update the global JSON file and then flush it into a file.
-(cl-defun org-embeddings-json-store (model id hash vector &optional metadata)
-  "Add VECTOR with ID to a JSON file for MODEL.
-
-If FLUSH is given, automatically save the cache to a file.
+(defun org-embeddings-json-store (record)
+  "Store a RECORD in JSON format.
 
 Use it for testing, primarily, as it doesn't work well with
 larger databases."
-  (unless (stringp id)
-    (error "ID should be a string"))
-  (unless (stringp hash)
-    (error "Hash should be a string"))
-  (unless (vectorp vector)
-    (error "Vector should be a vector"))
 
-  (unless (plist-member org-embeddings-json-cache model)
-    (org-embeddings-json-load model))
+  (unless (and record (org-embeddings-record-p record))
+    (signal 'wrong-type-argument (list 'org-embeddings-record-p record)))
 
-  (let ((current-embeddings (plist-get org-embeddings-json-cache model))
-        (new-object (make-hash-table :test 'equal)))
-    (org-embeddings-log "debug" "Current embeddings: %s" current-embeddings)
-    (puthash "vector" vector new-object)
-    (puthash "hash" hash new-object)
-    (cond ((and metadata (hash-table-p metadata))
-           (puthash "metadata" metadata new-object))
-          ((plistp metadata)
-           (puthash "metadata" (org-embeddings-plist-to-hash-table metadata) new-object))
-          ((listp metadata)
-           (puthash "metadata" (org-embeddings-alist-to-hash-table metadata) new-object))
-          (metadata (error "Metadata should be a plist, alist or a hash table. Got `%s' of type `%s'" metadata (type-of metadata))))
-    (puthash id new-object current-embeddings)
-    (org-embeddings-log "info" "Embedding `%s' JSON saved" id)))
+  (let ((model (org-embeddings-record-model record)))
+
+    (unless (plist-member org-embeddings-json-cache model)
+      (org-embeddings-json-load model))
+
+    (let ((current-embeddings (plist-get org-embeddings-json-cache model))
+          (id (org-embeddings-record-id record))
+          (new-object (make-hash-table :test 'equal)))
+
+      (puthash id record current-embeddings)
+      (org-embeddings-log "info" "Embedding `%s' JSON saved" id))
+    (when org-embeddings-json-flush-timer
+      (org-embeddings-log "debug" "Canceling JSON flush timer: %s" org-embeddings-json-flush-timer)
+      (cancel-timer org-embeddings-json-flush-timer))
+    (setq org-embeddings-json-flush-timer
+          (if (> (current-idle-time) org-embeddings-json-flush-timeout)
+              (run-with-timer org-embeddings-json-flush-timeout nil #'org-embeddings-json-flush model)
+            (run-with-idle-timer org-embeddings-json-flush-timeout nil #'org-embeddings-json-flush model)))))
+
+
+(defun org-embeddings-json-hashtable-to-record (model hashtable)
+  "Convert a HASHTABLE to an `org-embeddings-record' object for a MODEL."
+
+  (unless (and hashtable (hash-table-p hashtable))
+    (signal 'wrong-type-argument (list 'hash-table-p hashtable)))
+
+  (make-org-embeddings-record
+   :id (gethash "id" hashtable)
+   :hash (gethash "hash" hashtable)
+   :vector (gethash "vector" hashtable)
+   :model model
+   :metadata (org-embeddings-alist-to-hash-table (gethash "metadata" hashtable))))
+
+(defun org-embeddings-json-record-to-hashtable (record)
+  "Convert a RECORD object to a hash table."
+  (unless (and record (org-embeddings-record-p record))
+    (signal 'wrong-type-argument (list 'org-embeddings-record-p record)))
+
+  (let ((result (make-hash-table :test 'equal)))
+    (puthash "id" (org-embeddings-record-id record) result)
+    (puthash "hash" (org-embeddings-record-hash record) result)
+    (puthash "vector" (org-embeddings-record-vector record) result)
+    (puthash "metadata" (org-embeddings-record-metadata record) result)
+    result))
 
 (defun org-embeddings-json-load (model)
   "Load embeddings for MODEL from JSON file to a cache.
 
+A cache is a hash-table mapping ID's to `org-embeddings-record' objects.
+
 If value for a key is already in the cache, it won't be updated.
 Returns an empty hash table if the file doesn't exist."
-  (unless model
-    (error "No model given"))
+  (unless (and model (symbolp model))
+    (signal 'wrong-type-argument (list 'symbolp model)))
 
   (let ((file (org-embeddings-json-file-name model))
-        (cache (plist-get org-embeddings-json-cache model))
-        (loaded-cache))
+        (current-cache (plist-get org-embeddings-json-cache model)))
+    (unless current-cache
+        (setq current-cache (make-hash-table :test 'equal)))
 
-    (unless cache
-      (setq cache (make-hash-table :test 'equal))
-      (org-embeddings-log "debug" "Fresh cache for model `%s' created" model)
-      (setq org-embeddings-json-cache (plist-put org-embeddings-json-cache model cache)))
-
-    (if (not (file-exists-p file))
-        (org-embeddings-log "info" "JSON file for model `%s' doesn't exist" model)
-      (setq loaded-cache (with-temp-buffer
-                           (insert-file-contents file)
-                           (goto-char (point-min))
-                           (json-parse-buffer :null-object nil :object-type 'hash-table)))
-
-      (maphash (lambda (key value)
-                 (when (not (gethash key cache))
-                   (puthash key value cache)))
-               loaded-cache)
-      (org-embeddings-log "info" "JSON file for model `%s' loaded" model))
-    cache))
+    (if (file-exists-p file)
+        (let ((loaded-cache (with-temp-buffer
+                              (insert-file-contents file)
+                              (goto-char (point-min))
+                              (json-parse-buffer :null-object nil :object-type 'hash-table))))
+          (maphash (lambda (key value)
+                     (when (not (gethash key current-cache))
+                       (puthash key (org-embeddings-json-hashtable-to-record model value) current-cache)))
+                   loaded-cache)
+          (org-embeddings-log "info" "JSON file for model `%s' loaded from: %s" model file))
+      (org-embeddings-log "info" "JSON file for model `%s' doesn't exist" model))
+    (setq org-embeddings-json-cache (plist-put org-embeddings-json-cache model current-cache))
+    current-cache))
 
 (defun org-embeddings-json-flush (&optional model)
   "Flush the cache to JSON files.
 
 If MODEL is given - save only for that model."
-  (cl-loop for (model current-embeddings) on org-embeddings-json-cache by #'cddr
-           if (or (not model) (equal model model))
+  (cl-loop for (current-model current-embeddings) on org-embeddings-json-cache by #'cddr
+           if (or (not model) (equal model current-model))
            do (with-temp-file (org-embeddings-json-file-name model)
                 (org-embeddings-log "info" "Flushing JSON for model `%s' to `%s'" model (org-embeddings-json-file-name model))
-                (insert (json-serialize current-embeddings :null-object nil)))))
+                (let ((hashtable (make-hash-table :test 'equal)))
+                    (maphash (lambda (key value)
+                               (puthash key (org-embeddings-json-record-to-hashtable value) hashtable))
+                              current-embeddings)
+                    (insert (json-serialize hashtable :null-object nil)))))
+  (when org-embeddings-json-flush-timer
+    (cancel-timer org-embeddings-json-flush-timer))
+  (setq org-embeddings-json-flush-timer nil))
 
 (defun org-embeddings-json-get (model id)
   "Get an embedding for MODEL and ID from a JSON file."
-  (gethash id (org-embeddings-json-load model)))
+  (unless (plist-member org-embeddings-json-cache model)
+    (org-embeddings-json-load model))
+
+  (gethash id (plist-get org-embeddings-json-cache model)))
 
 (defun org-embeddings-json-file-name (model)
   "Get a file name for storing embeddings for PATH and MODEL."
   (unless (symbolp model)
-    (error "Model should be a symbol"))
+    (signal 'wrong-type-argument (list 'symbolp model)))
   (unless (file-exists-p org-embeddings-json-directory)
     (make-directory org-embeddings-json-directory t))
   (expand-file-name
@@ -296,76 +397,96 @@ This is set as a safe default, as the limit for the smallest model.")
                         (alist-get model org-embeddings-openai-model-tokens)
                         org-embeddings-openai-default-token-limit))))
 
+(cl-defun org-embeddings-openai-create (source)
+  "Create an embedding for a SOURCE.
 
-(defun org-embeddings-openai-create-req (text id metadata)
-  "Create a request for OpenAI API for TEXT with ID and METADATA.
+Returns a deferred object resolving to `org-embeddings-source' struct."
 
-TEXT: string
-ID: string
-METADATA: plist"
+  (unless (and source (org-embeddings-source-p source))
+    (signal 'wrong-type-argument (list 'org-embeddings-source-p source)))
 
-  (openai-embedding-create
-   (org-embeddings-openai-trim org-embeddings-openai-default-model text)
-   (lambda (data)
-     (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
-           (model (intern (alist-get 'model data))))
-       (org-embeddings-log "debug" "Saving emedding `%s'" id)
-       (org-embeddings-log "debug" "%s" text)
-       (org-embeddings-json-store model id (secure-hash 'sha1 text) vector metadata)))
-   :model (or org-embeddings-openai-default-model (error "No default OpenAI model set"))))
-
-(defun org-embeddings-openai-create (source)
-  "Create an embedding for SOURCE."
-  (unless source
-    (error "No source given"))
-
-  (let ((text (org-embeddings-source-text source))
+  (let ((text (org-embeddings-openai-trim org-embeddings-openai-default-model (org-embeddings-source-text source)))
         (id (org-embeddings-source-id source))
-        (metadata (org-embeddings-source-metadata source)))
-    (unless id
-      (error "No ID given"))
-    (unless text
-      (error "No text given"))
-    (org-embeddings-log "debug" "Creating OpenAI embedding for `%s'" text)
-    ;; No title
-    (if (not (plist-member metadata :title))
-        (org-embeddings-openai-tldr text (lambda (choice)
-                                           (org-embeddings-openai-create-req text id (plist-put metadata :title choice))))
-      (org-embeddings-openai-create-req text id metadata))))
+        (metadata (org-embeddings-source-metadata source))
+        (hash (org-embeddings-source-hash source))
+        (result (deferred:new)))
 
-(defun org-embeddings-openai-tldr (text callback)
-  "Create a TLDR for SOURCE and call CALLBACK with it."
-  (unless text
-    (error "No source given"))
+    (unless id
+      (signal 'org-embeddings-data-error '("ID")))
+    (unless (and text (> (length text) 0))
+      (signal 'org-embeddings-data-error '("TEXT")))
+
+    (org-embeddings-log "debug" "Creating OpenAI embedding for `%s'" id)
+
+    ;; Copy the value since we're going to pass it to the callback.
+    (openai-embedding-create text
+     (lambda (data)
+       (if openai-error
+           (deferred:errorback-post result (list openai-error data))
+
+         (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
+               (model (intern (alist-get 'model data))))
+           (deferred:callback-post result
+             (make-org-embeddings-record :id id :vector vector :model org-embeddings-openai-default-model :metadata metadata :hash hash)))))
+     :model (or org-embeddings-openai-default-model (error "No default OpenAI model set")))
+    result))
+
+(defun org-embeddings-openai-tldr (text)
+  "Create a TLDR for TEXT and call AND-THEN with it.
+
+Return a deferred object."
+
+  (unless (and text (stringp text))
+    (signal 'wrong-type-argument (list 'stringp text)))
 
   (org-embeddings-log "debug" "Creating TLDR for `%s'" text)
-  (openai-completion (format "%s\nTLDR, single line, 16 words at most:" text)
-                     (lambda (data)
-                       (let ((choice (string-trim (alist-get 'text (seq-elt (alist-get 'choices data) 0)))))
-                         (org-embeddings-log "debug" "TLDR: %s" choice)
-                         (funcall callback choice)))
-                     :max-tokens 32
-                     :temperature 1.0
-                     :frequency-penalty 0.0
-                     :presence-penalty 1.0
-                     :n 1))
+  (let ((result (deferred:new)))
+    (openai-completion (format "%s\nTLDR, single line, 16 words at most:" text)
+                       (lambda (data)
+                         (if openai-error
+                             (deferred:errorback-post result (list openai-error data))
+                           (let ((choice (string-trim (alist-get 'text (seq-elt (alist-get 'choices data) 0)))))
+                             (org-embeddings-log "debug" "TLDR: %s" choice)
+                             (deferred:callback-post result choice))))
+                       :max-tokens 32
+                       :temperature 1.0
+                       :frequency-penalty 0.0
+                       :presence-penalty 1.0
+                       :n 1)
+    result))
+
 
 ;; ===== CREATE =====
 
-(defun org-embeddings-create (&optional element)
-  "Get an embedding of an ELEMENT or a current org subtree."
-  (interactive)
-  (org-embeddings-openai-create
-   (if current-prefix-arg
-       (org-embeddings-file-get)
-     (let ((element (or element (org-embeddings-element-at-point))))
-       (unless element
-         (error "No element at point that we can get an embedding of"))
-       (if (bufferp element)
-           (with-current-buffer element
-             (org-embeddings-file-get))
-         (org-embeddings-source-from-element element))))))
+(defun org-embeddings-create (&optional source-or-element force)
+  "Get an embedding of an ELEMENT or a current org subtree.
 
+FORCE: Get embedding even if hash didn't change.
+
+Create an embedding and store it. Return a deferred object
+resolving to a vector after the embedding is saved."
+  (interactive)
+  (unless source-or-element
+    (signal 'wrong-type-argument (list 'org-elementp source-or-element)))
+
+  (let ((source source-or-element))
+    (unless (org-embeddings-source-p source)
+      (setq source (org-embeddings-source-from-element (org-embeddings-element-at-point))))
+    (org-embeddings-log "debug" "Creating embedding for `%s'" (org-embeddings-source-id source))
+    (let ((current-embedding nil))
+      (when (not force)
+        (setq current-embedding (org-embeddings-store-get org-embeddings-openai-default-model (org-embeddings-source-id source)))
+        (if current-embedding
+            (org-embeddings-log "debug" "Current embedding: %s" (org-embeddings-record-hash current-embedding))
+          (org-embeddings-log "debug" "No current embedding found")))
+      (cond ((and current-embedding (equal (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding)))
+             (org-embeddings-log "debug" "Embedding for `%s' is up to date" (org-embeddings-source-id source)))
+            ((and current-embedding (not (equal (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding))))
+             (org-embeddings-log "debug" "Embedding hashes differ for `%s': `%s' vs `%s'" (org-embeddings-source-id source) (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding)))
+            (t
+             (deferred:$
+               (org-embeddings-openai-create source)
+               (deferred:nextc it (lambda (record) (org-embeddings-store record)))))))))
 
 ;; TODO:: This is a demo-only function. Perhaps, when I have time - I need to write a helm source.
 (defun org-embeddings-search (&optional query)
@@ -417,27 +538,6 @@ METADATA: plist"
     (insert (apply 'format message args))
     (insert "\n")))
 
-
-;; ===== FILE =====
-
-(defconst org-embeddings-export-plist
-  '(:with-author nil :with-email nil :with-stat nil :with-priority nil :with-toc nil :with-properties nil :with-planning nil)
-  "Plist of options for `org-export-as'.")
-
-(defun org-embeddings-file-get ()
-  "Get a text and ID of current file to process.
-
-Returns `org-embeddings-source' object."
-  (save-window-excursion
-    (save-mark-and-excursion
-      (goto-char (point-min))
-      (let ((id (org-id-get)))
-        (unless id
-          (error "No ID found"))
-        (cl-letf ((org-export-use-babel nil))
-          (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
-            (make-org-embeddings-source :id id :text text :metadata `(:file ,(buffer-file-name)))))))))
-
 ;; ===== VECTOR ====
 
 (defun org-embeddings-vector-distance (left right)
@@ -485,19 +585,21 @@ Returns `org-embeddings-source' object."
 
 (when (featurep 'org-roam)
   (require 'org-roam)
+
   (defun org-embeddings-index-daily-files ()
     "Index all daily files."
+
+    ;; Create a queue of target files
+    ;; Start a new file in a callback
+
     (org-embeddings-json-load org-embeddings-openai-default-model)
-    (cl-loop for file in (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
-             for content-length = (nth 7 (file-attributes file))
-             when (> content-length 168)
-             do (progn
-                  (org-embeddings-create (find-file-noselect file))
-                  (org-embeddings-log "debug" "Indexing %s" file)
-                  (sleep-for 5)))
-    (org-embeddings-json-flush org-embeddings-openai-default-model)))
+    (deferred:loop (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
+      (lambda (target-file)
+        (org-embeddings-log "debug" "Indexing daily at `%s'" target-file)
+        (org-embeddings-create (org-embeddings-file-get target-file))))))
 
-
+(deferred:sync!
+  (org-embeddings-index-daily-files))
 (provide 'org-embeddings)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

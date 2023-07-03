@@ -1,7 +1,42 @@
 * Tasks
 
+* TODO [#A] Deal with an error in a deferred processing
+#+begin_src elisp
+Debugger entered--Lisp error: (outline-before-first-heading)
+  outline-back-to-heading(t)
+  org-back-to-heading-or-point-min(t)
+  org-get-property-block()
+  org--property-local-values("ID" nil)
+  org-entry-get(nil "ID")
+  org-id-get(1 nil)
+  (let ((id (org-id-get (point-min) nil))) (if id nil (org-embeddings-log "debug" "No ID found in %s" path) (error "No ID found")) (let ((org-export-use-babel nil)) (org-embeddings-log "debug" "Exporting embeddings source with id %s" id) (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist))) (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file (buffer-file-name))))))
+  (progn (insert-file-contents path) (goto-char (point-min)) (let ((id (org-id-get (point-min) nil))) (if id nil (org-embeddings-log "debug" "No ID found in %s" path) (error "No ID found")) (let ((org-export-use-babel nil)) (org-embeddings-log "debug" "Exporting embeddings source with id %s" id) (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist))) (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file (buffer-file-name)))))))
+  (unwind-protect (progn (insert-file-contents path) (goto-char (point-min)) (let ((id (org-id-get (point-min) nil))) (if id nil (org-embeddings-log "debug" "No ID found in %s" path) (error "No ID found")) (let ((org-export-use-babel nil)) (org-embeddings-log "debug" "Exporting embeddings source with id %s" id) (let ((text (org-export-as ... nil nil t org-embeddings-export-plist))) (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file (buffer-file-name))))))) (and (buffer-name temp-buffer) (kill-buffer temp-buffer)))
+  (save-current-buffer (set-buffer temp-buffer) (unwind-protect (progn (insert-file-contents path) (goto-char (point-min)) (let ((id (org-id-get (point-min) nil))) (if id nil (org-embeddings-log "debug" "No ID found in %s" path) (error "No ID found")) (let ((org-export-use-babel nil)) (org-embeddings-log "debug" "Exporting embeddings source with id %s" id) (let ((text ...)) (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file ...)))))) (and (buffer-name temp-buffer) (kill-buffer temp-buffer))))
+  (let ((temp-buffer (generate-new-buffer " *temp*" t))) (save-current-buffer (set-buffer temp-buffer) (unwind-protect (progn (insert-file-contents path) (goto-char (point-min)) (let ((id (org-id-get ... nil))) (if id nil (org-embeddings-log "debug" "No ID found in %s" path) (error "No ID found")) (let ((org-export-use-babel nil)) (org-embeddings-log "debug" "Exporting embeddings source with id %s" id) (let (...) (make-org-embeddings-source :id id :text text :metadata ...))))) (and (buffer-name temp-buffer) (kill-buffer temp-buffer)))))
+  org-embeddings-file-get("/Users/renat/emacs/roam/org/daily/2022-01-17.org")
+  (org-embeddings-create (org-embeddings-file-get target-file))
+  (closure (t) (target-file) (org-embeddings-log "debug" "Indexing daily at `%s'" target-file) (org-embeddings-create (org-embeddings-file-get target-file)))("/Users/renat/emacs/roam/org/daily/2022-01-17.org")
+  deferred:call-lambda((closure (t) (target-file) (org-embeddings-log "debug" "Indexing daily at `%s'" target-file) (org-embeddings-create (org-embeddings-file-get target-file))) "/Users/renat/emacs/roam/org/daily/2022-01-17.org")
+  #f(compiled-function (x) #<bytecode -0x9051b82e92b7d48>)(nil)
+  deferred:call-lambda(#f(compiled-function (x) #<bytecode -0x9051b82e92b7d48>) nil)
+  deferred:exec-task(#s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b82e92b7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b82f1eb7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b8293ab7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b83ebeb7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b9bd5ab7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b9bc0eb7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b9b80ab7d48>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next ... :status nil :value nil) :status nil :value nil) :status nil :value nil) :status nil :value nil) :status nil :value nil) :status nil :value nil) :status nil :value nil) ok nil)
+  deferred:worker()
+  apply(deferred:worker nil)
+  timer-event-handler([t 25761 37785 86718 nil deferred:worker nil nil 0 nil])
+  sit-for(0.05)
+  deferred:sync!(#s(deferred :callback #f(compiled-function (x) #<bytecode -0x9051b9b80ab7d48>) :errorback deferred:default-errorback :cancel #f(compiled-function (x) #<bytecode -0x16a88df575a77c3>) :next #s(deferred :callback #f(compiled-function (x) #<bytecode -0x1433a959d4b774b2>) :errorback deferred:default-errorback :cancel deferred:default-cancel :next #s(deferred :callback deferred:default-callback :errorback #f(compiled-function (err) #<bytecode -0x19e5ed468cf6f67a>) :cancel deferred:default-cancel :next nil :status nil :value nil) :status nil :value nil) :status nil :value nil))
+  (progn (deferred:sync! (org-embeddings-index-daily-files)))
+  elisp--eval-last-sexp(nil)
+  eval-last-sexp(nil)
+  funcall-interactively(eval-last-sexp nil)
+  command-execute(eval-last-sexp)
+#+end_src
 * TODO [#A] Catch errors returned by OpenAI
-* TODO [#B] Skip embeddings generation if hash didn't change
+* DONE [#B] Skip embeddings generation if hash didn't change
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2023-07-03 Mon 05:41]
+:END:
 * TODO [#C] Extract title from the =#+title= field of the file
 * TODO [#B] Implement traversing over org-roam node and generating embeddings
 ** DONE Search should display in an org buffer
@@ -19,6 +54,7 @@ Current "I'm feeling lucky" approach is't very helpful.
 This way we will be able to patch the model data at any time wihout
 being afraid of race conditions.
 
+** DONE Use the =deferred= library for async processing
 
 * Logic
 
