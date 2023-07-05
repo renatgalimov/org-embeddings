@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org) (deferred))
-;; Last-Updated: Mon Jul  3 05:40:59 2023 (+0300)
+;; Last-Updated: Mon Jul  3 13:47:52 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 1929
+;;     Update #: 2062
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -85,21 +85,24 @@
   '(:with-author nil :with-email nil :with-stat nil :with-priority nil :with-toc nil :with-properties nil :with-planning nil)
   "Plist of options for `org-export-as'.")
 
+
+
 (defun org-embeddings-file-get (path)
   "Get a text and ID of current file to process.
 
 Returns `org-embeddings-source' object."
+  (org-embeddings-log "debug" "Getting source for file %s" path)
   (with-temp-buffer
     (insert-file-contents path)
     (goto-char (point-min))
     (let ((id (org-id-get (point-min) nil)))
-      (unless id
-        (org-embeddings-log "debug" "No ID found in %s" path)
-        (error "No ID found"))
-      (cl-letf ((org-export-use-babel nil))
-        (org-embeddings-log "debug" "Exporting embeddings source with id %s" id)
-        (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
-          (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file (buffer-file-name))))))))
+        (unless id
+          (org-embeddings-log "debug" "No ID found in %s" path)
+          (error "No ID found"))
+        (cl-letf ((org-export-use-babel nil))
+          (org-embeddings-log "debug" "Exporting embeddings source with id %s" id)
+          (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
+            (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file path)))))))
 
 ;; ===== ELEMENT =====
 
@@ -178,7 +181,7 @@ Search for an embeddable element going up the file."
   "We send this to the API to get embeddings."
   (id nil :type string :documentation "ID of the object to store" :read-only t)
   (text "" :type string :documentation "Text to get embeddings for" :read-only t)
-  (metadata nil :type hash-table :documentation "Metadata loaded from a source" :read-only t)
+  (metadata nil :type hash-table :documentation "Metadata for a source")
   (hash nil :type string :documentation "Hash of the source text" :read-only t))
 
 
@@ -271,11 +274,13 @@ larger databases."
 
       (puthash id record current-embeddings)
       (org-embeddings-log "info" "Embedding `%s' JSON saved" id))
-    (when org-embeddings-json-flush-timer
-      (org-embeddings-log "debug" "Canceling JSON flush timer: %s" org-embeddings-json-flush-timer)
-      (cancel-timer org-embeddings-json-flush-timer))
+    (if org-embeddings-json-flush-timer
+        (progn (org-embeddings-log "debug" "Canceling JSON flush timer: %s" org-embeddings-json-flush-timer)
+               (cancel-timer org-embeddings-json-flush-timer))
+      (org-embeddings-log "debug" "No JSON flush timer to cancel"))
+    (org-embeddings-log "debug" "Setting JSON flush timer")
     (setq org-embeddings-json-flush-timer
-          (if (> (current-idle-time) org-embeddings-json-flush-timeout)
+          (if (> (time-convert (or (current-idle-time) '(0 0 0 0)) 'integer) org-embeddings-json-flush-timeout)
               (run-with-timer org-embeddings-json-flush-timeout nil #'org-embeddings-json-flush model)
             (run-with-idle-timer org-embeddings-json-flush-timeout nil #'org-embeddings-json-flush model)))))
 
@@ -439,7 +444,6 @@ Return a deferred object."
   (unless (and text (stringp text))
     (signal 'wrong-type-argument (list 'stringp text)))
 
-  (org-embeddings-log "debug" "Creating TLDR for `%s'" text)
   (let ((result (deferred:new)))
     (openai-completion (format "%s\nTLDR, single line, 16 words at most:" text)
                        (lambda (data)
@@ -458,7 +462,7 @@ Return a deferred object."
 
 ;; ===== CREATE =====
 
-(defun org-embeddings-create (&optional source-or-element force)
+(defun org-embeddings-create (&optional source-or-element)
   "Get an embedding of an ELEMENT or a current org subtree.
 
 FORCE: Get embedding even if hash didn't change.
@@ -473,20 +477,9 @@ resolving to a vector after the embedding is saved."
     (unless (org-embeddings-source-p source)
       (setq source (org-embeddings-source-from-element (org-embeddings-element-at-point))))
     (org-embeddings-log "debug" "Creating embedding for `%s'" (org-embeddings-source-id source))
-    (let ((current-embedding nil))
-      (when (not force)
-        (setq current-embedding (org-embeddings-store-get org-embeddings-openai-default-model (org-embeddings-source-id source)))
-        (if current-embedding
-            (org-embeddings-log "debug" "Current embedding: %s" (org-embeddings-record-hash current-embedding))
-          (org-embeddings-log "debug" "No current embedding found")))
-      (cond ((and current-embedding (equal (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding)))
-             (org-embeddings-log "debug" "Embedding for `%s' is up to date" (org-embeddings-source-id source)))
-            ((and current-embedding (not (equal (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding))))
-             (org-embeddings-log "debug" "Embedding hashes differ for `%s': `%s' vs `%s'" (org-embeddings-source-id source) (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding)))
-            (t
-             (deferred:$
-               (org-embeddings-openai-create source)
-               (deferred:nextc it (lambda (record) (org-embeddings-store record)))))))))
+    (deferred:$
+      (org-embeddings-openai-create source)
+      (deferred:nextc it (lambda (record) (org-embeddings-store record))))))
 
 ;; TODO:: This is a demo-only function. Perhaps, when I have time - I need to write a helm source.
 (defun org-embeddings-search (&optional query)
@@ -502,11 +495,11 @@ resolving to a vector after the embedding is saved."
    query
    (lambda (data)
      (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
-           (model (intern (alist-get 'model data))))
+           (model org-embeddings-openai-default-model))
        (let ((vectors-by-id (org-embeddings-json-load model))
              (locations))
          (maphash (lambda (_ object)
-                    (let ((similarity (org-embeddings-vector-cosine-similarity vector (gethash "vector" object))))
+                    (let ((similarity (org-embeddings-vector-cosine-similarity vector (org-embeddings-record-vector object))))
                       (when (> similarity 0.75)
                         (push (cons similarity object) locations))))
                   vectors-by-id)
@@ -517,8 +510,9 @@ resolving to a vector after the embedding is saved."
            (insert (format " - model: %s\n" model))
            (insert (format "%s\n\n" (cl-loop for location in (seq-sort (lambda (a b) (> (car a) (car b))) locations)
                                              for similarity = (car location)
-                                             for file = (gethash "file" (gethash "metadata" (cdr location)))
-                                             for title = (gethash "title" (gethash "metadata" (cdr location)))
+                                             for metadata = (org-embeddings-record-metadata (cdr location))
+                                             for file = (gethash "file" metadata)
+                                             for title = (gethash "title" metadata)
                                              concat (format "- %.2f [[%s][%s]]\n" similarity file (or title file)))))
            (display-buffer (current-buffer))))))
    :model (or org-embeddings-openai-default-model (error "No default OpenAI model set"))))
@@ -586,6 +580,35 @@ resolving to a vector after the embedding is saved."
 (when (featurep 'org-roam)
   (require 'org-roam)
 
+  (defun org-embeddings-index-single-daily-file (target-file)
+    "Index a single daily file TARGET-FILE."
+    (org-embeddings-log "debug" "----- Indexing daily at `%s' -----" target-file)
+    (condition-case err
+        (let ((source (org-embeddings-file-get target-file)))
+          (let ((current-embedding (org-embeddings-store-get org-embeddings-openai-default-model (org-embeddings-source-id source))))
+            (if current-embedding
+                (org-embeddings-log "debug" "Current embedding: %s" (org-embeddings-record-hash current-embedding))
+              (org-embeddings-log "debug" "No current embedding found"))
+            (cond ((and current-embedding (equal (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding)))
+                   (org-embeddings-log "debug" "Embedding for `%s' is up to date" (org-embeddings-source-id source)))
+                  ((and current-embedding (not (equal (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding))))
+                   (org-embeddings-log "debug" "Embedding hashes differ for `%s': `%s' vs `%s'" (org-embeddings-source-id source) (org-embeddings-source-hash source) (org-embeddings-record-hash current-embedding)))
+                  (t
+                   (deferred:$
+                     (deferred:nextc (org-embeddings-openai-tldr (org-embeddings-source-text source))
+                       (lambda (tldr)
+                         (org-embeddings-log "debug" "Got TLDR `%s' for `%s'" tldr (org-embeddings-source-id source))
+                         (puthash "title" tldr (org-embeddings-source-metadata source))
+                         (org-embeddings-create source)))
+                     (deferred:error it
+                       (lambda (err)
+                         (org-embeddings-log "error" "Failed to index `%s': %s" target-file err)
+                         (deferred:succeed nil)))
+                     (deferred:nextc it (lambda (_) (deferred:wait-idle 1))))))))
+      (error (progn
+               (org-embeddings-log "error" "Failed to index `%s': %s" target-file err)
+               (deferred:succeed)))))
+
   (defun org-embeddings-index-daily-files ()
     "Index all daily files."
 
@@ -593,13 +616,15 @@ resolving to a vector after the embedding is saved."
     ;; Start a new file in a callback
 
     (org-embeddings-json-load org-embeddings-openai-default-model)
-    (deferred:loop (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
-      (lambda (target-file)
-        (org-embeddings-log "debug" "Indexing daily at `%s'" target-file)
-        (org-embeddings-create (org-embeddings-file-get target-file))))))
+    (deferred:$
+      (deferred:loop (directory-files (expand-file-name org-roam-dailies-directory org-roam-directory) t "\\.org$")
+        (lambda (target-file)
+          (org-embeddings-index-single-daily-file target-file)))
+      (deferred:nextc it (lambda (_) (org-embeddings-log "info" "===== Finished indexing daily files ====="))))))
 
-(deferred:sync!
-  (org-embeddings-index-daily-files))
+(setq deferred:debug-on-signal t)
+
+;; (deferred:sync!   (org-embeddings-index-daily-files))
 (provide 'org-embeddings)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
