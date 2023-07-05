@@ -1,6 +1,13 @@
 * Tasks
 
-* TODO [#A] Deal with an error in a deferred processing
+** TODO [#A] Catch errors returned by OpenAI
+** TODO [#C] Extract title from the =#+title= field of the file
+** TODO [#B] Implement traversing over org-roam node and generating embeddings
+** DONE [#A] Deal with an error in a deferred processing
+:LOGBOOK:
+- State "DONE"       from "CANCELED"   [2023-07-05 Wed 05:59]
+- State "DONE"       from "TODO"       [2023-07-05 Wed 05:59]
+:END:
 #+begin_src elisp
 Debugger entered--Lisp error: (outline-before-first-heading)
   outline-back-to-heading(t)
@@ -32,13 +39,10 @@ Debugger entered--Lisp error: (outline-before-first-heading)
   funcall-interactively(eval-last-sexp nil)
   command-execute(eval-last-sexp)
 #+end_src
-* TODO [#A] Catch errors returned by OpenAI
-* DONE [#B] Skip embeddings generation if hash didn't change
+** DONE [#B] Skip embeddings generation if hash didn't change
 :LOGBOOK:
 - State "DONE"       from "TODO"       [2023-07-03 Mon 05:41]
 :END:
-* TODO [#C] Extract title from the =#+title= field of the file
-* TODO [#B] Implement traversing over org-roam node and generating embeddings
 ** DONE Search should display in an org buffer
 :LOGBOOK:
 - State "DONE"       from "TODO"       [2023-06-17 Sat 07:38]
