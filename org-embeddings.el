@@ -7,9 +7,9 @@
 ;; Created: Wed May 24 07:23:28 2023 (+0300)
 ;; Version:
 ;; Package-Requires: ((openai) (org) (deferred))
-;; Last-Updated: Mon Jul  3 13:47:52 2023 (+0300)
+;; Last-Updated: Fri Jul 14 11:11:23 2023 (+0300)
 ;;           By: Renat Galimov
-;;     Update #: 2062
+;;     Update #: 2064
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -96,13 +96,13 @@ Returns `org-embeddings-source' object."
     (insert-file-contents path)
     (goto-char (point-min))
     (let ((id (org-id-get (point-min) nil)))
-        (unless id
-          (org-embeddings-log "debug" "No ID found in %s" path)
-          (error "No ID found"))
-        (cl-letf ((org-export-use-babel nil))
-          (org-embeddings-log "debug" "Exporting embeddings source with id %s" id)
-          (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
-            (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file path)))))))
+      (unless id
+        (org-embeddings-log "debug" "No ID found in %s" path)
+        (error "No ID found"))
+      (cl-letf ((org-export-use-babel nil))
+        (org-embeddings-log "debug" "Exporting embeddings source with id %s" id)
+        (let ((text (org-export-as 'ascii nil nil t org-embeddings-export-plist)))
+          (make-org-embeddings-source :id id :text text :metadata (org-embeddings-metadata :file path)))))))
 
 ;; ===== ELEMENT =====
 
@@ -323,7 +323,7 @@ Returns an empty hash table if the file doesn't exist."
   (let ((file (org-embeddings-json-file-name model))
         (current-cache (plist-get org-embeddings-json-cache model)))
     (unless current-cache
-        (setq current-cache (make-hash-table :test 'equal)))
+      (setq current-cache (make-hash-table :test 'equal)))
 
     (if (file-exists-p file)
         (let ((loaded-cache (with-temp-buffer
@@ -348,10 +348,10 @@ If MODEL is given - save only for that model."
            do (with-temp-file (org-embeddings-json-file-name model)
                 (org-embeddings-log "info" "Flushing JSON for model `%s' to `%s'" model (org-embeddings-json-file-name model))
                 (let ((hashtable (make-hash-table :test 'equal)))
-                    (maphash (lambda (key value)
-                               (puthash key (org-embeddings-json-record-to-hashtable value) hashtable))
-                              current-embeddings)
-                    (insert (json-serialize hashtable :null-object nil)))))
+                  (maphash (lambda (key value)
+                             (puthash key (org-embeddings-json-record-to-hashtable value) hashtable))
+                           current-embeddings)
+                  (insert (json-serialize hashtable :null-object nil)))))
   (when org-embeddings-json-flush-timer
     (cancel-timer org-embeddings-json-flush-timer))
   (setq org-embeddings-json-flush-timer nil))
@@ -425,15 +425,15 @@ Returns a deferred object resolving to `org-embeddings-source' struct."
 
     ;; Copy the value since we're going to pass it to the callback.
     (openai-embedding-create text
-     (lambda (data)
-       (if openai-error
-           (deferred:errorback-post result (list openai-error data))
+                             (lambda (data)
+                               (if openai-error
+                                   (deferred:errorback-post result (list openai-error data))
 
-         (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
-               (model (intern (alist-get 'model data))))
-           (deferred:callback-post result
-             (make-org-embeddings-record :id id :vector vector :model org-embeddings-openai-default-model :metadata metadata :hash hash)))))
-     :model (or org-embeddings-openai-default-model (error "No default OpenAI model set")))
+                                 (let ((vector (alist-get 'embedding (seq-elt (alist-get 'data data) 0)))
+                                       (model (intern (alist-get 'model data))))
+                                   (deferred:callback-post result
+                                     (make-org-embeddings-record :id id :vector vector :model org-embeddings-openai-default-model :metadata metadata :hash hash)))))
+                             :model (or org-embeddings-openai-default-model (error "No default OpenAI model set")))
     result))
 
 (defun org-embeddings-openai-tldr (text)
@@ -621,8 +621,6 @@ resolving to a vector after the embedding is saved."
         (lambda (target-file)
           (org-embeddings-index-single-daily-file target-file)))
       (deferred:nextc it (lambda (_) (org-embeddings-log "info" "===== Finished indexing daily files ====="))))))
-
-(setq deferred:debug-on-signal t)
 
 ;; (deferred:sync!   (org-embeddings-index-daily-files))
 (provide 'org-embeddings)

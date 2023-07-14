@@ -1,8 +1,33 @@
 * Tasks
 
+** TODO Measure the number of tokens before processing
+I want to know if I need to reduce the text size before I do API request.
+
+** TODO Fix unresolved errors
+#+begin_example
+2023-07-14 11:11:44 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2022-01-28.org': (org-embeddings-data-error TEXT)
+2023-07-14 11:11:50 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2022-04-20.org': (org-embeddings-data-error TEXT)
+2023-07-14 11:11:54 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2022-07-11.org': (error (#s(request-response 400 nil ((error (message . "This model's maximum context length is 4097 tokens, however you requested 4588 tokens (4556 in your prompt; 32 for the completion). Please reduce your prompt; or completion length.") (type . "invalid_request_error") (param) (code))) (error http 400) error "https://api.openai.com/v1/completions" t (:error (closure ((user . "") (logit-bias) (best-of) (frequency-penalty . 0.0) (presence-penalty . 1.0) (stop) (echo) (logprobs) (stream) (n . 1) (top-p) (temperature . 1.0) (max-tokens . 32) (suffix) (model . "text-davinci-003") (org-id) (key lambda nil (op-get-password "zc3rypii34pkpbxx3hgp34ex2y")) (content-type . "application/json") (parameters) (base-url . "https://api.openai.com/v1") (--cl-rest-- :max-tokens 32 :temperature 1.0 :frequency-penalty 0.0 :presence-penalty 1.0 :n 1) (callback closure ((result . #s(deferred deferred:default-callback deferred:default-errorback deferred:default-cancel #s(deferred (closure ((it . #s(deferred (closure #11 (_) (deferred:wait-idle 1)) deferred:default-errorback deferred:default-cancel #s(deferred #[257 "\302\300\301\"\207" [(closure ((it . #s(deferred (closure #18 (_) (org-embeddings-log "info" "===== Finished indexing daily files =====")) deferred:default-errorback deferred:default-cancel nil nil nil)) t) (target-file) (org-embeddings-index-single-daily-file target-file)) "/Users/renat/emacs/roam/org/daily/2022-07-12.org" deferred:call-lambda] 4 "
+" #s(hash-table size 65 test equal rehash-size 1.5 rehash-threshold 0.8125 data ("file" "/Users/renat/emacs/roam/org/daily/2022-07-11.org")) "4bf76a3406d817250044ccb12f7e5e72a5e711c827da5d82692199a3a614f99c")) (target-file . "/Users/renat/emacs/roam/org/daily/2022-07-11.org") cl-struct-org-embeddings-record-tags cl-struct-org-embeddings-source-tags t) (err) (org-embeddings-log "error" "Failed to index `%s': %s" target-file err) (deferred:succeed nil)) deferred:default-cancel #s(deferred (closure ((it . #11) (current-embedding) (source . #s(org-embeddings-source "c1a21ffc-229f-473c-a055-f1550314967d" "1 Priorities
+" #s(hash-table size 65 test equal rehash-size 1.5 rehash-threshold 0.8125 data ("file" "/Users/renat/emacs/roam/org/daily/2022-07-11.org")) "4bf76a3406d817250044ccb12f7e5e72a5e711c827da5d82692199a3a614f99c")) (target-file . "/Users/renat/emacs/roam/org/daily/2022-07-11.org") cl-struct-org-embeddings-record-tags cl-struct-org-embeddings-source-tags t) (err) (org-embeddings-log "error" "Failed to index `%s': %s" target-file err) (deferred:succeed nil)) deferred:default-cancel #s(deferred (closure ((it . #11) (current-embedding) (source . #s(org-embeddings-source "c1a21ffc-229f-473c-a055-f1550314967d" "1 Priorities
+2023-07-14 11:11:59 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2022-08-16.org': (org-embeddings-data-error TEXT)
+2023-07-14 11:12:03 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2023-06-16.org': (org-embeddings-data-error TEXT)
+2023-07-14 11:12:17 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2023-07-12.org': (error No ID found)
+2023-07-14 11:12:17 ERROR Failed to index `/Users/renat/emacs/roam/org/daily/2023-07-13.org': (error Need absolute ‘org-attach-id-dir’ to attach in buffers without filename)
+#+end_example
+
+** TODO Model's maximum context length when generating a TL;DR;
+#+begin_example
+(error (message . "This model's maximum context length is 4097 tokens, however you requested 4588 tokens (4556 in your prompt; 32 for the completion). Please reduce your prompt; or completion length.")
+#+end_example
+
+** TODO error Need absolute ‘org-attach-id-dir’ to attach in buffers without filename
+=org/daily/2023-07-13.org=
 ** TODO [#A] Catch errors returned by OpenAI
 ** TODO [#C] Extract title from the =#+title= field of the file
 ** TODO [#B] Implement traversing over org-roam node and generating embeddings
+
+
 ** DONE [#A] Deal with an error in a deferred processing
 :LOGBOOK:
 - State "DONE"       from "CANCELED"   [2023-07-05 Wed 05:59]
